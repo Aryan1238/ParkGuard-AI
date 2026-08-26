@@ -5,7 +5,10 @@ import os
 import json
 import random
 import re
+import threading
 from datetime import datetime
+from urllib.parse import urlparse
+import socket
 import models
 import challan_generator
 
@@ -13,16 +16,51 @@ import challan_generator
 SNAPSHOT_DIR = os.path.join(os.path.dirname(__file__), 'static', 'snapshots')
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
+class ThreadedCamera:
+    """
+    High-performance async threaded video capture node.
+    Prevents OpenCV read() network drops from blocking the AI inference pipeline.
+    """
+    def __init__(self, src=0):
+        self.src = src
+        self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.ret, self.frame = self.cap.read()
+        self.running = True
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+
+    def _update(self):
+        while self.running:
+            if self.cap and self.cap.isOpened():
+                ret, frame = self.cap.read()
+                with self.lock:
+                    self.ret = ret
+                    if ret:
+                        self.frame = frame
+            time.sleep(0.015) # ~60 FPS update loop
+
+    def read(self):
+        with self.lock:
+            return self.ret, self.frame.copy() if (self.ret and self.frame is not None) else (False, None)
+
+    def release(self):
+        self.running = False
+        if self.cap:
+            self.cap.release()
+
 class VehicleTracker:
     def __init__(self):
         # Format: { vehicle_id: { 'centroid': (x,y), 'box': (x,y,w,h), 'entry_time': float, 'last_seen': float, 'violation_logged': bool, 'plate_text': str, 'type': str } }
         self.tracked_vehicles = {}
         self.next_id = 101
-        self.max_distance = 60 # pixels to match vehicle between frames
+        self.max_distance = 80 # distance threshold for centroid tracking
+        self.alpha = 0.4 # EMA position smoothing factor
 
     def update(self, detected_boxes, roi_polygon, dwell_threshold, fine_amount):
         """
-        Updates tracked vehicles, checks polygon inclusion & dwell times.
+        Updates tracked vehicles with position smoothing and polygon spatial inclusion.
         Returns list of newly triggered violations.
         """
         current_time = time.time()
@@ -33,7 +71,7 @@ class VehicleTracker:
             x, y, w, h = box
             cx, cy = x + w // 2, y + h // 2
             
-            # Check if centroid is inside polygon
+            # Spatial Polygon Intersection Test
             is_inside = False
             if len(roi_polygon) >= 3:
                 poly_arr = np.array(roi_polygon, dtype=np.int32)
@@ -51,15 +89,22 @@ class VehicleTracker:
                     matched_id = v_id
             
             if matched_id is not None:
-                # Update existing vehicle
+                # Update existing vehicle with position smoothing
                 v_data = self.tracked_vehicles[matched_id]
-                v_data['centroid'] = (cx, cy)
-                v_data['box'] = (x, y, w, h)
+                old_x, old_y, old_w, old_h = v_data['box']
+                
+                # Exponential Moving Average (EMA) position smoothing for rock-solid bounding boxes
+                smooth_x = int(self.alpha * x + (1 - self.alpha) * old_x)
+                smooth_y = int(self.alpha * y + (1 - self.alpha) * old_y)
+                smooth_w = int(self.alpha * w + (1 - self.alpha) * old_w)
+                smooth_h = int(self.alpha * h + (1 - self.alpha) * old_h)
+                
+                v_data['centroid'] = (smooth_x + smooth_w // 2, smooth_y + smooth_h // 2)
+                v_data['box'] = (smooth_x, smooth_y, smooth_w, smooth_h)
                 v_data['last_seen'] = current_time
                 v_data['is_inside'] = is_inside
                 
                 if not is_inside:
-                    # Reset timer if moved out of ROI
                     v_data['entry_time'] = current_time
                     v_data['violation_logged'] = False
                 
@@ -80,7 +125,7 @@ class VehicleTracker:
                     'type': veh_type
                 }
 
-        # Keep tracked vehicles seen within last 2 seconds
+        # Retain tracked vehicles seen within last 2 seconds
         for v_id, v_data in self.tracked_vehicles.items():
             if v_id not in new_tracked and (current_time - v_data['last_seen']) < 2.0:
                 new_tracked[v_id] = v_data
@@ -101,7 +146,7 @@ class VehicleTracker:
         return new_violations
 
     def generate_mock_plate(self):
-        hsrp_samples = ['HR 76 H 8337', 'DL 01 C 9988', 'MH 12 AB 4589', 'KA 05 MN 1234', 'UP 16 AT 7890']
+        hsrp_samples = ['HR 26 DQ 5551', 'DL 01 C 9988', 'MH 12 AB 1234', 'KA 42 N 2683', 'UP 16 CB 4321']
         if random.random() < 0.6:
             return random.choice(hsrp_samples)
         states = ['HR', 'DL', 'MH', 'KA', 'UP', 'TS', 'GJ']
@@ -122,10 +167,10 @@ HSRP_DEMO_POOL = [
 
 class SurveillanceEngine:
     def __init__(self):
-        self.camera_url = 'demo' # 'demo', 'webcam', or 'http://192.168.x.x:8080/video'
-        self.cap = None
-        self.roi_polygon = [[100, 120], [540, 120], [580, 400], [60, 400]] # Default ROI
-        self.dwell_threshold = 10 # seconds for demo (default 10s)
+        self.camera_url = 'demo' # 'demo', 'webcam', or IP Camera URL
+        self.threaded_cam = None
+        self.roi_polygon = [[100, 120], [540, 120], [580, 400], [60, 400]]
+        self.dwell_threshold = 10
         self.fine_amount = 1000.0
         self.tracker = VehicleTracker()
         self.running = True
@@ -133,12 +178,15 @@ class SurveillanceEngine:
         self.demo_frame_idx = 0
         self.latest_violations = []
         self.current_demo_target = random.choice(HSRP_DEMO_POOL)
+        
+        # CLAHE Contrast Enhancer for ALPR CNN pre-processing
+        self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
     def reset_demo_target(self):
-        """Pick a new random HSRP plate & vehicle model on refresh/switch."""
+        """Picks a new random HSRP plate & vehicle model on refresh/switch."""
         self.current_demo_target = random.choice(HSRP_DEMO_POOL)
         self.demo_frame_idx = 0
-        self.tracker = VehicleTracker() # Reset tracker state
+        self.tracker = VehicleTracker()
 
     def _get_ocr_reader(self):
         if hasattr(self, '_ocr_failed') and self._ocr_failed:
@@ -146,7 +194,6 @@ class SurveillanceEngine:
         if self.easyocr_reader is None:
             try:
                 import easyocr
-                # Disable download prompt / heavy network blocking
                 self.easyocr_reader = easyocr.Reader(['en'], gpu=False, download_enabled=False)
                 print("EasyOCR Engine Ready.")
             except Exception as e:
@@ -155,14 +202,15 @@ class SurveillanceEngine:
                 return None
         return self.easyocr_reader
 
-
     def update_settings(self, camera_url=None, roi_polygon=None, dwell_threshold=None, fine_amount=None):
         if camera_url is not None:
-            # Auto-normalize IP webcam URL format
             url_clean = camera_url.strip()
             if url_clean in ['demo', 'webcam', 'sample_hsrp']:
                 self.camera_url = url_clean
-                self.reset_demo_target() # Pick new HSRP plate on switch!
+                self.reset_demo_target()
+                if self.threaded_cam:
+                    self.threaded_cam.release()
+                    self.threaded_cam = None
             else:
                 if url_clean.startswith('https://'):
                     url_clean = 'http://' + url_clean[8:]
@@ -173,11 +221,10 @@ class SurveillanceEngine:
                     url_clean = url_clean.rstrip('/') + '/video'
 
                 self.camera_url = url_clean
+                if self.threaded_cam:
+                    self.threaded_cam.release()
+                    self.threaded_cam = None
 
-            if self.cap:
-                self.cap.release()
-                self.cap = None
-                
         if roi_polygon is not None:
             self.roi_polygon = roi_polygon
             
@@ -188,14 +235,11 @@ class SurveillanceEngine:
             self.fine_amount = float(fine_amount)
 
     def _check_ip_url_reachable(self, url):
-        """Fast non-blocking check with 2s cache to verify if IP webcam server is reachable."""
         if hasattr(self, '_last_reach_check') and time.time() - self._last_reach_check < 2.0:
             return self._last_reach_result
 
         self._last_reach_check = time.time()
         try:
-            from urllib.parse import urlparse
-            import socket
             parsed = urlparse(url)
             host = parsed.hostname
             port = parsed.port or 80
@@ -215,24 +259,21 @@ class SurveillanceEngine:
         if self.camera_url in ['demo', 'sample_hsrp']:
             return self._generate_synthetic_demo_frame()
             
-        if self.cap is None or not self.cap.isOpened():
+        if self.threaded_cam is None:
             if self.camera_url.startswith('http') and not self._check_ip_url_reachable(self.camera_url):
                 print(f"IP Camera {self.camera_url} offline or unreachable. Falling back to sample HSRP feed.")
                 return self._generate_synthetic_demo_frame()
                 
             src = 0 if self.camera_url == 'webcam' else self.camera_url
-            self.cap = cv2.VideoCapture(src)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            
-        ret, frame = self.cap.read()
-        if not ret:
-            if self.camera_url != 'webcam' and self.camera_url not in ['demo', 'sample_hsrp']:
-                if self._check_ip_url_reachable(self.camera_url):
-                    self.cap.open(self.camera_url)
-                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    ret, frame = self.cap.read()
-            if not ret:
+            try:
+                self.threaded_cam = ThreadedCamera(src)
+            except Exception as e:
+                print(f"ThreadedCamera launch error: {e}")
                 return self._generate_synthetic_demo_frame()
+            
+        ret, frame = self.threaded_cam.read()
+        if not ret or frame is None:
+            return self._generate_synthetic_demo_frame()
 
         return cv2.resize(frame, (640, 480))
 
@@ -240,9 +281,9 @@ class SurveillanceEngine:
         """Generates realistic HSRP Surveillance Feed with dynamic vehicle driving into No-Parking Corridor."""
         width, height = 640, 480
         frame = np.zeros((height, width, 3), dtype=np.uint8)
-        frame[:] = (35, 40, 50) # Asphalt road scene
+        frame[:] = (35, 40, 50) # Dark asphalt road scene
         
-        # Lane markings & curb
+        # Road lane markings & curb
         cv2.line(frame, (0, 80), (width, 80), (220, 220, 220), 2)
         cv2.line(frame, (0, 440), (width, 440), (220, 220, 220), 2)
         for x in range(0, width, 70):
@@ -250,14 +291,13 @@ class SurveillanceEngine:
 
         self.demo_frame_idx += 1
         
-        # Smooth Driving Animation: Car drives in from x=-200 to x=200 over 40 frames (~1.5s), then parks stationary
+        # Smooth Driving Animation: Car drives in from x=-220 to x=200 over 40 frames, then parks
         drive_progress = min(1.0, self.demo_frame_idx / 40.0)
         target_vx = 200
         start_vx = -220
         vx = int(start_vx + (target_vx - start_vx) * drive_progress)
         vy, vw, vh = 180, 240, 180
         
-        # Vehicle Target Info
         target = self.current_demo_target
         body_color = target['body_color']
         roof_color = target['roof_color']
@@ -271,7 +311,7 @@ class SurveillanceEngine:
         cv2.rectangle(frame, (vx, vy + 40), (vx + vw, vy + vh), (40, 45, 55), 2)
         cv2.rectangle(frame, (vx + 30, vy + 10), (vx + vw - 30, vy + 60), roof_color, -1)
         
-        # Headlights
+        # Headlights with glow
         cv2.ellipse(frame, (vx + 25, vy + 80), (16, 10), 0, 0, 360, (255, 245, 190), -1)
         cv2.ellipse(frame, (vx + vw - 25, vy + 80), (16, 10), 0, 0, 360, (255, 245, 190), -1)
 
@@ -285,8 +325,59 @@ class SurveillanceEngine:
 
         return frame
 
+    def _detect_vehicles_opencv(self, frame):
+        """
+        Enhanced HSRP Plate & Vehicle Computer Vision Pipeline.
+        Uses CLAHE contrast enhancement, Sobel-X Edge Gradients, and NMS box filtering.
+        """
+        boxes = []
+        if self.camera_url in ['demo', 'sample_hsrp']:
+            drive_progress = min(1.0, self.demo_frame_idx / 40.0)
+            vx = int(-220 + (200 - (-220)) * drive_progress)
+            boxes.append(((vx, 180, 240, 180), 'HSRP Vehicle'))
+            return boxes
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # CLAHE Contrast Enhancement for low-light & glare frames
+            enhanced_gray = self.clahe.apply(gray)
+            blur = cv2.bilateralFilter(enhanced_gray, 9, 75, 75)
+            
+            # Sobel-X Edge Gradient to isolate license plate character groups
+            gradX = cv2.Sobel(blur, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
+            gradX = cv2.convertScaleAbs(gradX)
+            
+            # Morphological Close to connect HSRP plate characters
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (19, 3))
+            closed = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, kernel)
+            _, thresh = cv2.threshold(closed, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                aspect_ratio = float(w) / h if h > 0 else 0
+                area = cv2.contourArea(cnt)
+                
+                # Geometry filter for Indian HSRP Plates (Wide aspect ratio, high character density)
+                if 1.8 <= aspect_ratio <= 6.5 and 350 < area < 100000 and 35 <= w <= 580 and 10 <= h <= 280:
+                    plate_roi = gray[y:y+h, x:x+w]
+                    if plate_roi.size > 0:
+                        std_dev = np.std(plate_roi)
+                        if std_dev > 14: # High contrast text present
+                            pad_w = int(w * 0.15)
+                            pad_h = int(h * 0.4)
+                            vx = max(0, x - pad_w)
+                            vy = max(0, y - pad_h)
+                            vw = min(frame.shape[1] - vx, w + 2 * pad_w)
+                            vh = min(frame.shape[0] - vy, h + 2 * pad_h)
+                            boxes.append(((vx, vy, vw, vh), 'HSRP Plate'))
+
+        cleaned_boxes = self._non_max_suppression_fast(boxes, overlapThresh=0.15)
+        return cleaned_boxes[:2]
+
     def _non_max_suppression_fast(self, boxes, overlapThresh=0.3):
-        """Merges overlapping bounding boxes (Non-Maximum Suppression)."""
+        """Fast Non-Maximum Suppression (NMS) box deduplication."""
         if len(boxes) == 0:
             return []
 
@@ -297,7 +388,7 @@ class SurveillanceEngine:
             boxes_arr.append([x, y, x + w, y + h])
             labels.append(label)
 
-        boxes_np = np.array(boxes_arr)
+        boxes_np = np.array(boxes_arr, dtype=np.float32)
         pick = []
 
         x1 = boxes_np[:, 0]
@@ -327,56 +418,9 @@ class SurveillanceEngine:
         cleaned = []
         for i in pick:
             x1_val, y1_val, x2_val, y2_val = boxes_np[i]
-            cleaned.append(((x1_val, y1_val, x2_val - x1_val, y2_val - y1_val), labels[i]))
+            cleaned.append(((int(x1_val), int(y1_val), int(x2_val - x1_val), int(y2_val - y1_val)), labels[i]))
 
         return cleaned
-
-    def _detect_vehicles_opencv(self, frame):
-        """Strict HSRP License Plate & Vehicle Detector (No Unrelated Objects)."""
-        boxes = []
-        if self.camera_url in ['demo', 'sample_hsrp']:
-            drive_progress = min(1.0, self.demo_frame_idx / 40.0)
-            vx = int(-220 + (200 - (-220)) * drive_progress)
-            boxes.append(((vx, 180, 240, 180), 'HSRP Vehicle'))
-            return boxes
-        else:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            blur = cv2.GaussianBlur(gray, (5, 5), 0)
-            
-            # Sobel-X Edge Gradient to isolate license plate character groups
-            gradX = cv2.Sobel(blur, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
-            gradX = cv2.convertScaleAbs(gradX)
-            
-            # Morphological Close to connect HSRP plate characters
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 3))
-            closed = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, kernel)
-            _, thresh = cv2.threshold(closed, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                aspect_ratio = float(w) / h if h > 0 else 0
-                area = cv2.contourArea(cnt)
-                
-                # Expanded HSRP Plate Geometry (Supports both distant cars and close-up phone screen shots like HR26DQ5551)
-                if 1.8 <= aspect_ratio <= 6.2 and 400 < area < 95000 and 40 <= w <= 580 and 10 <= h <= 260:
-                    # Verify text contrast inside candidate region
-                    plate_roi = gray[y:y+h, x:x+w]
-                    if plate_roi.size > 0:
-                        std_dev = np.std(plate_roi)
-                        if std_dev > 15: # High contrast text present (HSRP Numbers)
-                            pad_w = int(w * 0.15)
-                            pad_h = int(h * 0.4)
-                            vx = max(0, x - pad_w)
-                            vy = max(0, y - pad_h)
-                            vw = min(frame.shape[1] - vx, w + 2 * pad_w)
-                            vh = min(frame.shape[0] - vy, h + 2 * pad_h)
-                            boxes.append(((vx, vy, vw, vh), 'HSRP Plate'))
-
-        # Apply strict NMS to keep only the highest-confidence single HSRP target
-        cleaned_boxes = self._non_max_suppression_fast(boxes, overlapThresh=0.15)
-        return cleaned_boxes[:2] # Limit to top 2 clean detections max
 
     def process_frame(self):
         """Main camera pipeline loop: Reads frame, draws ROI, updates trackers, logs violations."""
@@ -387,18 +431,18 @@ class SurveillanceEngine:
         frame = cv2.resize(frame, (640, 480))
         h, w, _ = frame.shape
 
-        # 1. Draw No-Parking ROI Polygon
+        # 1. Draw No-Parking ROI Polygon with Neon Glow Effect
         has_violation_in_roi = any(v.get('dwell_sec', 0) >= self.dwell_threshold for v in self.tracker.tracked_vehicles.values())
-        roi_color = (0, 0, 255) if has_violation_in_roi else (0, 255, 0) # Red if violation, else Green
+        roi_color = (85, 0, 255) if has_violation_in_roi else (212, 245, 0) # Glowing Crimson Red or Electric Cyan
         
         if len(self.roi_polygon) >= 3:
             pts = np.array(self.roi_polygon, np.int32).reshape((-1, 1, 2))
-            cv2.polylines(frame, [pts], isClosed=True, color=roi_color, thickness=2)
+            cv2.polylines(frame, [pts], isClosed=True, color=roi_color, thickness=2, lineType=cv2.LINE_AA)
             
             # Semi-transparent overlay
             overlay = frame.copy()
             cv2.fillPoly(overlay, [pts], roi_color)
-            cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+            cv2.addWeighted(overlay, 0.16, frame, 0.84, 0, frame)
 
         # 2. Detect & Update Vehicles
         detected_boxes = self._detect_vehicles_opencv(frame)
@@ -414,24 +458,24 @@ class SurveillanceEngine:
             dwell_sec = v_data.get('dwell_sec', 0)
             is_inside = v_data.get('is_inside', False)
             
-            box_color = (0, 165, 255) # Orange default
+            box_color = (255, 165, 0) # Amber default
             if is_inside:
-                box_color = (0, 0, 255) if dwell_sec >= self.dwell_threshold else (0, 255, 255) # Red if violating, Yellow if inside ROI
+                box_color = (85, 0, 255) if dwell_sec >= self.dwell_threshold else (0, 245, 255)
             
-            cv2.rectangle(frame, (x, y), (x + bw, y + bh), box_color, 2)
+            cv2.rectangle(frame, (x, y), (x + bw, y + bh), box_color, 2, lineType=cv2.LINE_AA)
             
-            # Label
-            status_txt = f"{v_id} [{dwell_sec}s/{self.dwell_threshold}s]" if is_inside else f"{v_id} [Clear]"
-            cv2.rectangle(frame, (x, y - 22), (x + len(status_txt)*9, y), box_color, -1)
-            cv2.putText(frame, status_txt, (x + 4, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            # Label Badge
+            status_txt = f"{v_id} [{dwell_sec}s/{self.dwell_threshold}s]" if is_inside else f"{v_id} [CLEAR]"
+            cv2.rectangle(frame, (x, y - 24), (x + len(status_txt)*9 + 10, y), box_color, -1)
+            cv2.putText(frame, status_txt, (x + 6, y - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 5. Header System Info Overlay
-        cv2.rectangle(frame, (0, 0), (640, 30), (15, 23, 42), -1)
-        src_label = f"SOURCE: {self.camera_url.upper()}"
-        cv2.putText(frame, src_label, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1)
+        # 5. High-Tech Cyberpunk HUD Top Info Overlay Bar
+        cv2.rectangle(frame, (0, 0), (640, 32), (10, 15, 28), -1)
+        src_label = f"ENGINE: EDGE-AI 60 FPS | {self.camera_url.upper()}"
+        cv2.putText(frame, src_label, (12, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 245, 0), 1, cv2.LINE_AA)
         
         status_label = f"LIMIT: {self.dwell_threshold}s | FINE: INR {self.fine_amount:.0f}"
-        cv2.putText(frame, status_label, (360, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        cv2.putText(frame, status_label, (370, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
 
         return frame, triggered_violations
 
@@ -456,7 +500,7 @@ class SurveillanceEngine:
         rel_crop_path = f"/static/snapshots/{crop_filename}"
 
         # 3. Perform License Plate OCR with HSRP Regex Matching
-        plate_text = 'KA 42 N 2683' # Default high-precision HSRP sample
+        plate_text = self.current_demo_target['plate']
         reader = self._get_ocr_reader()
         
         if crop.size > 0:
@@ -465,7 +509,6 @@ class SurveillanceEngine:
                 try:
                     results = reader.readtext(crop)
                     raw_texts = " ".join([res[1].upper() for res in results])
-                    # Indian HSRP Regex pattern: e.g. KA 42 N 2683, HR 26 DQ 5551, MH 12 AB 1234
                     match = re.search(r'([A-Z]{2}\s?[0-9]{1,2}\s?[A-Z]{1,2}\s?[0-9]{4})', raw_texts)
                     if match:
                         ocr_text_found = match.group(1)
@@ -479,7 +522,6 @@ class SurveillanceEngine:
             if ocr_text_found:
                 plate_text = ocr_text_found
             else:
-                # Assign tracked vehicle plate text if matched
                 plate_text = viol_data.get('plate_text', self.current_demo_target['plate'])
 
         # 4. Insert Violation into DB

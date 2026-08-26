@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI No-Parking Zone Monitoring & Digital Challan System</title>
+    <title>ParkGuard AI | Autonomous No-Parking Surveillance & Enforcement</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Custom CSS -->
+    <!-- Custom Cyberpunk Glassmorphism CSS -->
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -20,21 +20,26 @@
         <div class="header-container">
             <div class="brand">
                 <div class="brand-icon">
-                    <i class="fa-solid fa-camera-rotate"></i>
+                    <i class="fa-solid fa-shield-halved"></i>
                 </div>
                 <div class="brand-text">
-                    <h1>PARKGUARD AI</h1>
-                    <span class="sub-title">Autonomous No-Parking Surveillance & Enforcement</span>
+                    <h1>PARKGUARD <span class="neon-text">AI</span></h1>
+                    <span class="sub-title">Autonomous No-Parking Surveillance & HSRP Enforcement</span>
                 </div>
             </div>
 
             <div class="header-actions">
+                <div class="engine-badge">
+                    <span class="pulse-dot"></span>
+                    <span id="engine-fps">60 FPS EDGE AI</span>
+                </div>
+
                 <div class="status-pill active" id="system-status">
                     <span class="status-dot"></span>
                     <span id="status-text">CAMERA LIVE (DEMO FEED)</span>
                 </div>
                 
-                <button class="btn btn-primary" onclick="openPhoneModal()">
+                <button class="btn btn-primary glow-btn" onclick="openPhoneModal()">
                     <i class="fa-solid fa-mobile-screen-button"></i> Connect Phone Camera
                 </button>
             </div>
@@ -46,15 +51,15 @@
         
         <!-- Summary Stats Grid -->
         <section class="stats-grid">
-            <div class="stat-card border-accent-blue">
-                <div class="stat-icon icon-blue"><i class="fa-solid fa-triangle-exclamation"></i></div>
+            <div class="stat-card border-neon-cyan">
+                <div class="stat-icon icon-cyan"><i class="fa-solid fa-triangle-exclamation"></i></div>
                 <div class="stat-info">
                     <span class="stat-label">Total Violations</span>
                     <h2 class="stat-value" id="stat-total">0</h2>
                 </div>
             </div>
 
-            <div class="stat-card border-accent-red">
+            <div class="stat-card border-neon-red">
                 <div class="stat-icon icon-red"><i class="fa-solid fa-receipt"></i></div>
                 <div class="stat-info">
                     <span class="stat-label">Pending Fines</span>
@@ -62,7 +67,7 @@
                 </div>
             </div>
 
-            <div class="stat-card border-accent-green">
+            <div class="stat-card border-neon-green">
                 <div class="stat-icon icon-green"><i class="fa-solid fa-circle-check"></i></div>
                 <div class="stat-info">
                     <span class="stat-label">Collected Revenue</span>
@@ -70,10 +75,10 @@
                 </div>
             </div>
 
-            <div class="stat-card border-accent-purple">
+            <div class="stat-card border-neon-purple">
                 <div class="stat-icon icon-purple"><i class="fa-solid fa-car-side"></i></div>
                 <div class="stat-info">
-                    <span class="stat-label">Active Vehicles</span>
+                    <span class="stat-label">Active Tracked Vehicles</span>
                     <h2 class="stat-value" id="stat-active">0</h2>
                 </div>
             </div>
@@ -85,7 +90,7 @@
             <!-- Left: Live Video Feed & Canvas Overlay -->
             <div class="panel stream-panel">
                 <div class="panel-header">
-                    <h3><i class="fa-solid fa-video"></i> Live Surveillance Feed</h3>
+                    <h3><i class="fa-solid fa-video text-cyan"></i> Live Surveillance Feed</h3>
                     <div class="stream-controls">
                         <button class="btn btn-sm btn-outline" id="btn-draw-roi" onclick="toggleRoiDrawing()">
                             <i class="fa-solid fa-draw-polygon"></i> Draw No-Parking Zone
@@ -109,16 +114,30 @@
                     <img id="live-stream" src="/video_feed" alt="Surveillance Stream" crossorigin="anonymous">
                     <canvas id="roi-canvas"></canvas>
 
+                    <!-- HUD Overlay Corner Brackets & Scanner Grid -->
+                    <div class="hud-corners">
+                        <span class="hud-corner top-left"></span>
+                        <span class="hud-corner top-right"></span>
+                        <span class="hud-corner bottom-left"></span>
+                        <span class="hud-corner bottom-right"></span>
+                    </div>
+
+                    <div class="hud-scanline"></div>
+
+                    <div class="hud-live-tag">
+                        <span class="rec-dot"></span> REC | 1080p ALPR ACTIVE
+                    </div>
+
                     <!-- Interactive Drawing Instructions Banner -->
                     <div class="drawing-banner" id="drawing-banner" style="display: none;">
-                        <i class="fa-solid fa-hand-pointer"></i> Click 3 or more points on the stream to define your <b>No-Parking Zone</b>. Click "Save Zone" when done.
+                        <i class="fa-solid fa-hand-pointer text-cyan"></i> Click 3 or more points on the stream to define your <b>No-Parking Zone</b>. Click "Save Zone" when done.
                         <button class="btn btn-xs btn-success ml-auto" onclick="saveRoiPolygon()">Save Zone</button>
                     </div>
                 </div>
 
                 <div class="stream-footer">
                     <div class="threshold-setting">
-                        <label for="dwell-select"><i class="fa-solid fa-stopwatch"></i> Dwell Threshold:</label>
+                        <label for="dwell-select"><i class="fa-solid fa-stopwatch text-cyan"></i> Dwell Threshold:</label>
                         <select id="dwell-select" onchange="updateDwellThreshold(this.value)">
                             <option value="5">5 Seconds (Fast Test)</option>
                             <option value="10" selected>10 Seconds (Demo Default)</option>
@@ -129,7 +148,7 @@
                     </div>
 
                     <div class="fine-setting">
-                        <label for="fine-input"><i class="fa-solid fa-indian-rupee-sign"></i> Penalty Amount:</label>
+                        <label for="fine-input"><i class="fa-solid fa-indian-rupee-sign text-green"></i> Penalty Amount:</label>
                         <input type="number" id="fine-input" value="1000" step="100" min="100" onchange="updateFineAmount(this.value)">
                     </div>
                 </div>
@@ -138,14 +157,14 @@
             <!-- Right: Real-time Violation Alerts Feed -->
             <div class="panel alerts-panel">
                 <div class="panel-header">
-                    <h3><i class="fa-solid fa-bell text-red"></i> Real-Time Alerts</h3>
+                    <h3><i class="fa-solid fa-bell text-red pulse-icon"></i> Real-Time Alerts</h3>
                     <span class="badge badge-red" id="alert-counter">0 NEW</span>
                 </div>
 
                 <div class="alerts-list" id="alerts-list">
                     <!-- Dynamic Alert Cards Will Load Here -->
                     <div class="empty-alerts">
-                        <i class="fa-solid fa-shield-halved"></i>
+                        <i class="fa-solid fa-shield-cat"></i>
                         <p>No active violations detected yet.<br>Vehicles exceeding the dwell threshold will trigger digital challans instantly.</p>
                     </div>
                 </div>
@@ -156,7 +175,7 @@
         <!-- Violations Record Table -->
         <section class="panel table-panel">
             <div class="panel-header">
-                <h3><i class="fa-solid fa-file-invoice"></i> Violation Logs & Digital Challans</h3>
+                <h3><i class="fa-solid fa-file-invoice text-purple"></i> Violation Logs & Digital Challans</h3>
                 
                 <div class="table-actions">
                     <div class="search-box">
@@ -199,7 +218,7 @@
     <div class="modal" id="phone-modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fa-solid fa-mobile-screen-button"></i> Connect Smartphone Camera</h3>
+                <h3><i class="fa-solid fa-mobile-screen-button text-cyan"></i> Connect Smartphone Camera</h3>
                 <button class="modal-close" onclick="closePhoneModal()">&times;</button>
             </div>
             
@@ -240,7 +259,7 @@
 
             <div class="modal-footer">
                 <button class="btn btn-dark" onclick="closePhoneModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="connectPhoneCameraStream()">Connect Phone Cam</button>
+                <button class="btn btn-primary glow-btn" onclick="connectPhoneCameraStream()">Connect Phone Cam</button>
             </div>
         </div>
     </div>

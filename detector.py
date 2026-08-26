@@ -325,10 +325,24 @@ class SurveillanceEngine:
 
         return frame
 
+    def _get_yolo_model(self):
+        if hasattr(self, '_yolo_failed') and self._yolo_failed:
+            return None
+        if not hasattr(self, 'yolo_model') or self.yolo_model is None:
+            try:
+                from ultralytics import YOLO
+                self.yolo_model = YOLO('yolov8n.pt')
+                print("YOLOv8 Pretrained Deep Learning Model Ready.")
+            except Exception as e:
+                print(f"YOLOv8 fallback notice: {e}")
+                self._yolo_failed = True
+                return None
+        return self.yolo_model
+
     def _detect_vehicles_opencv(self, frame):
         """
-        Enhanced HSRP Plate & Vehicle Computer Vision Pipeline.
-        Uses CLAHE contrast enhancement, Sobel-X Edge Gradients, and NMS box filtering.
+        Deep Learning + OpenCV HSRP Plate & Vehicle Computer Vision Pipeline.
+        Uses pretrained YOLOv8 CNN for Car, Bike, Bus, and Truck detection, combined with CLAHE Sobel-X HSRP plate localization.
         """
         boxes = []
         if self.camera_url in ['demo', 'sample_hsrp']:
@@ -336,45 +350,52 @@ class SurveillanceEngine:
             vx = int(-220 + (200 - (-220)) * drive_progress)
             boxes.append(((vx, 180, 240, 180), 'HSRP Vehicle'))
             return boxes
-        else:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # CLAHE Contrast Enhancement for low-light & glare frames
-            enhanced_gray = self.clahe.apply(gray)
-            blur = cv2.bilateralFilter(enhanced_gray, 9, 75, 75)
-            
-            # Sobel-X Edge Gradient to isolate license plate character groups
-            gradX = cv2.Sobel(blur, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
-            gradX = cv2.convertScaleAbs(gradX)
-            
-            # Morphological Close to connect HSRP plate characters
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (19, 3))
-            closed = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, kernel)
-            _, thresh = cv2.threshold(closed, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                aspect_ratio = float(w) / h if h > 0 else 0
-                area = cv2.contourArea(cnt)
-                
-                # Geometry filter for Indian HSRP Plates (Wide aspect ratio, high character density)
-                if 1.8 <= aspect_ratio <= 6.5 and 350 < area < 100000 and 35 <= w <= 580 and 10 <= h <= 280:
-                    plate_roi = gray[y:y+h, x:x+w]
-                    if plate_roi.size > 0:
-                        std_dev = np.std(plate_roi)
-                        if std_dev > 14: # High contrast text present
-                            pad_w = int(w * 0.15)
-                            pad_h = int(h * 0.4)
-                            vx = max(0, x - pad_w)
-                            vy = max(0, y - pad_h)
-                            vw = min(frame.shape[1] - vx, w + 2 * pad_w)
-                            vh = min(frame.shape[0] - vy, h + 2 * pad_h)
-                            boxes.append(((vx, vy, vw, vh), 'HSRP Plate'))
+        yolo = self._get_yolo_model()
+        if yolo:
+            try:
+                # Class IDs: 2: car, 3: motorcycle, 5: bus, 7: truck
+                results = yolo(frame, verbose=False, conf=0.35, classes=[2, 3, 5, 7])[0]
+                class_names = {2: 'Car', 3: 'Bike', 5: 'Bus', 7: 'Truck'}
+                for r in results.boxes:
+                    box = r.xywh[0].cpu().numpy()
+                    cx, cy, w, h = box
+                    x = int(cx - w / 2)
+                    y = int(cy - h / 2)
+                    cls_id = int(r.cls[0].cpu().numpy())
+                    label = class_names.get(cls_id, 'Vehicle')
+                    boxes.append(((max(0, x), max(0, y), int(w), int(h)), label))
+            except Exception as e:
+                print(f"YOLO inference notice: {e}")
 
-        cleaned_boxes = self._non_max_suppression_fast(boxes, overlapThresh=0.15)
-        return cleaned_boxes[:2]
+        # Secondary CLAHE + Sobel-X HSRP Plate Localization fallback
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        enhanced_gray = self.clahe.apply(gray)
+        blur = cv2.bilateralFilter(enhanced_gray, 9, 75, 75)
+        gradX = cv2.Sobel(blur, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
+        gradX = cv2.convertScaleAbs(gradX)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (19, 3))
+        closed = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, kernel)
+        _, thresh = cv2.threshold(closed, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect_ratio = float(w) / h if h > 0 else 0
+            area = cv2.contourArea(cnt)
+            if 1.8 <= aspect_ratio <= 6.5 and 350 < area < 100000 and 35 <= w <= 580 and 10 <= h <= 280:
+                plate_roi = gray[y:y+h, x:x+w]
+                if plate_roi.size > 0 and np.std(plate_roi) > 14:
+                    pad_w = int(w * 0.15)
+                    pad_h = int(h * 0.4)
+                    vx = max(0, x - pad_w)
+                    vy = max(0, y - pad_h)
+                    vw = min(frame.shape[1] - vx, w + 2 * pad_w)
+                    vh = min(frame.shape[0] - vy, h + 2 * pad_h)
+                    boxes.append(((vx, vy, vw, vh), 'HSRP Plate'))
+
+        cleaned_boxes = self._non_max_suppression_fast(boxes, overlapThresh=0.2)
+        return cleaned_boxes[:3]
 
     def _non_max_suppression_fast(self, boxes, overlapThresh=0.3):
         """Fast Non-Maximum Suppression (NMS) box deduplication."""

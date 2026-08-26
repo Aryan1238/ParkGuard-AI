@@ -257,6 +257,9 @@ class SurveillanceEngine:
 
     def _get_frame(self):
         if self.camera_url in ['demo', 'sample_hsrp']:
+            if self.threaded_cam:
+                self.threaded_cam.release()
+                self.threaded_cam = None
             return self._generate_synthetic_demo_frame()
             
         if self.threaded_cam is None:

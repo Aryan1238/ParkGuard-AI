@@ -1,6 +1,7 @@
 # 🚗 ParkGuard AI: Autonomous No-Parking Surveillance & HSRP Enforcement System
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-GitHub_Pages-00f2fe?style=for-the-badge&logo=github)](https://aryan1238.github.io/ParkGuard-AI/)
+[![Deploy to Render](https://img.shields.io/badge/Deploy_Live_Server-Render.com-46E3B7?style=for-the-badge&logo=render)](https://render.com/deploy?repo=https://github.com/Aryan1238/ParkGuard-AI)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.x-green.svg)](https://opencv.org/)
 [![YOLOv8](https://img.shields.io/badge/YOLOv8-CNN_Deep_Learning-orange.svg)](https://docs.ultralytics.com/)

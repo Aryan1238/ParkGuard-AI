@@ -1,0 +1,22 @@
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database & Generated files
+*.db
+*.sqlite3
+test_challan.pdf
+
+# Snapshots
+static/snapshots/
+
+# OS & IDE files
+.DS_Store
+.idea/
+.vscode/

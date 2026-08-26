@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI No-Parking Zone Monitoring & Digital Challan System</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <header class="app-header">
+        <div class="header-container">
+            <div class="brand">
+                <div class="brand-icon">
+                    <i class="fa-solid fa-camera-rotate"></i>
+                </div>
+                <div class="brand-text">
+                    <h1>PARKGUARD AI</h1>
+                    <span class="sub-title">Autonomous No-Parking Surveillance & Enforcement</span>
+                </div>
+            </div>
+
+            <div class="header-actions">
+                <div class="status-pill active" id="system-status">
+                    <span class="status-dot"></span>
+                    <span id="status-text">CAMERA LIVE (DEMO FEED)</span>
+                </div>
+                
+                <button class="btn btn-primary" onclick="openPhoneModal()">
+                    <i class="fa-solid fa-mobile-screen-button"></i> Connect Phone Camera
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Dashboard Container -->
+    <main class="dashboard-body">
+        
+        <!-- Summary Stats Grid -->
+        <section class="stats-grid">
+            <div class="stat-card border-accent-blue">
+                <div class="stat-icon icon-blue"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <div class="stat-info">
+                    <span class="stat-label">Total Violations</span>
+                    <h2 class="stat-value" id="stat-total">0</h2>
+                </div>
+            </div>
+
+            <div class="stat-card border-accent-red">
+                <div class="stat-icon icon-red"><i class="fa-solid fa-receipt"></i></div>
+                <div class="stat-info">
+                    <span class="stat-label">Pending Fines</span>
+                    <h2 class="stat-value" id="stat-unpaid">₹0</h2>
+                </div>
+            </div>
+
+            <div class="stat-card border-accent-green">
+                <div class="stat-icon icon-green"><i class="fa-solid fa-circle-check"></i></div>
+                <div class="stat-info">
+                    <span class="stat-label">Collected Revenue</span>
+                    <h2 class="stat-value" id="stat-collected">₹0</h2>
+                </div>
+            </div>
+
+            <div class="stat-card border-accent-purple">
+                <div class="stat-icon icon-purple"><i class="fa-solid fa-car-side"></i></div>
+                <div class="stat-info">
+                    <span class="stat-label">Active Vehicles</span>
+                    <h2 class="stat-value" id="stat-active">0</h2>
+                </div>
+            </div>
+        </section>
+
+        <!-- Monitoring Section: Live Stream & Alert Panel -->
+        <section class="monitoring-grid">
+            
+            <!-- Left: Live Video Feed & Canvas Overlay -->
+            <div class="panel stream-panel">
+                <div class="panel-header">
+                    <h3><i class="fa-solid fa-video"></i> Live Surveillance Feed</h3>
+                    <div class="stream-controls">
+                        <button class="btn btn-sm btn-outline" id="btn-draw-roi" onclick="toggleRoiDrawing()">
+                            <i class="fa-solid fa-draw-polygon"></i> Draw No-Parking Zone
+                        </button>
+                        <button class="btn btn-sm btn-outline" onclick="resetRoiPolygon()">
+                            <i class="fa-solid fa-rotate-left"></i> Reset Zone
+                        </button>
+                        <button class="btn btn-sm btn-dark" onclick="switchCamera('demo')">
+                            <i class="fa-solid fa-play"></i> Traffic Demo
+                        </button>
+                        <button class="btn btn-sm btn-dark" onclick="switchCamera('sample_hsrp')">
+                            <i class="fa-solid fa-id-card"></i> HSRP Test Feed
+                        </button>
+                        <button class="btn btn-sm btn-dark" onclick="switchCamera('webcam')">
+                            <i class="fa-solid fa-laptop"></i> Laptop Cam
+                        </button>
+                    </div>
+                </div>
+
+                <div class="video-container" id="video-container">
+                    <img id="live-stream" src="/video_feed" alt="Surveillance Stream" crossorigin="anonymous">
+                    <canvas id="roi-canvas"></canvas>
+
+                    <!-- Interactive Drawing Instructions Banner -->
+                    <div class="drawing-banner" id="drawing-banner" style="display: none;">
+                        <i class="fa-solid fa-hand-pointer"></i> Click 3 or more points on the stream to define your <b>No-Parking Zone</b>. Click "Save Zone" when done.
+                        <button class="btn btn-xs btn-success ml-auto" onclick="saveRoiPolygon()">Save Zone</button>
+                    </div>
+                </div>
+
+                <div class="stream-footer">
+                    <div class="threshold-setting">
+                        <label for="dwell-select"><i class="fa-solid fa-stopwatch"></i> Dwell Threshold:</label>
+                        <select id="dwell-select" onchange="updateDwellThreshold(this.value)">
+                            <option value="5">5 Seconds (Fast Test)</option>
+                            <option value="10" selected>10 Seconds (Demo Default)</option>
+                            <option value="30">30 Seconds</option>
+                            <option value="60">1 Minute</option>
+                            <option value="180">3 Minutes (Standard Rules)</option>
+                        </select>
+                    </div>
+
+                    <div class="fine-setting">
+                        <label for="fine-input"><i class="fa-solid fa-indian-rupee-sign"></i> Penalty Amount:</label>
+                        <input type="number" id="fine-input" value="1000" step="100" min="100" onchange="updateFineAmount(this.value)">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Real-time Violation Alerts Feed -->
+            <div class="panel alerts-panel">
+                <div class="panel-header">
+                    <h3><i class="fa-solid fa-bell text-red"></i> Real-Time Alerts</h3>
+                    <span class="badge badge-red" id="alert-counter">0 NEW</span>
+                </div>
+
+                <div class="alerts-list" id="alerts-list">
+                    <!-- Dynamic Alert Cards Will Load Here -->
+                    <div class="empty-alerts">
+                        <i class="fa-solid fa-shield-halved"></i>
+                        <p>No active violations detected yet.<br>Vehicles exceeding the dwell threshold will trigger digital challans instantly.</p>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Violations Record Table -->
+        <section class="panel table-panel">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-file-invoice"></i> Violation Logs & Digital Challans</h3>
+                
+                <div class="table-actions">
+                    <div class="search-box">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="text" id="search-input" placeholder="Search Number Plate or Challan ID..." onkeyup="filterViolations()">
+                    </div>
+
+                    <div class="tab-filters">
+                        <button class="tab-btn active" onclick="setFilterStatus('All', this)">All</button>
+                        <button class="tab-btn" onclick="setFilterStatus('Unpaid', this)">Unpaid</button>
+                        <button class="tab-btn" onclick="setFilterStatus('Paid', this)">Paid</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Challan ID</th>
+                            <th>Timestamp</th>
+                            <th>License Plate</th>
+                            <th>Vehicle</th>
+                            <th>Dwell Time</th>
+                            <th>Fine Amount</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="violations-tbody">
+                        <!-- Table Rows Rendered via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Phone Camera Setup Modal -->
+    <div class="modal" id="phone-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-mobile-screen-button"></i> Connect Smartphone Camera</h3>
+                <button class="modal-close" onclick="closePhoneModal()">&times;</button>
+            </div>
+            
+            <div class="modal-body">
+                <p class="modal-desc">Turn your mobile phone into an AI traffic camera using local Wi-Fi!</p>
+
+                <div class="steps-box">
+                    <div class="step-item">
+                        <span class="step-num">1</span>
+                        <div>
+                            <b>Install IP Camera App:</b>
+                            <p>Android: Download <b>IP Webcam</b> (Play Store)<br>iPhone: Download <b>DroidCam</b> or <b>iVCam</b> (App Store)</p>
+                        </div>
+                    </div>
+
+                    <div class="step-item">
+                        <span class="step-num">2</span>
+                        <div>
+                            <b>Connect to Same Wi-Fi:</b>
+                            <p>Ensure your laptop/PC and smartphone are connected to the same Wi-Fi network.</p>
+                        </div>
+                    </div>
+
+                    <div class="step-item">
+                        <span class="step-num">3</span>
+                        <div>
+                            <b>Start Server in App & Enter Stream URL:</b>
+                            <p>Open the app, tap <b>Start Server</b>, and copy the video URL displayed (e.g. <code>http://192.168.1.15:8080/video</code>).</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="phone-url-input">Phone Video Stream URL:</label>
+                    <input type="text" id="phone-url-input" placeholder="http://192.168.1.XX:8080/video">
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-dark" onclick="closePhoneModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="connectPhoneCameraStream()">Connect Phone Cam</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Snapshot & Challan Preview Modal -->
+    <div class="modal" id="preview-modal">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h3 id="preview-title">Violation Evidence & Digital Ticket</h3>
+                <button class="modal-close" onclick="closePreviewModal()">&times;</button>
+            </div>
+            
+            <div class="modal-body preview-body" id="preview-content">
+                <!-- Content injected dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Audio Element for Alarm -->
+    <audio id="alarm-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
+
+    <!-- Custom JS -->
+    <script src="/static/js/main.js"></script>
+</body>
+</html>

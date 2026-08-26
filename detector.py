@@ -179,6 +179,10 @@ class SurveillanceEngine:
         self.latest_violations = []
         self.current_demo_target = random.choice(HSRP_DEMO_POOL)
         
+        # Background subtractor MOG2 for motion/foreground vehicle region filtering
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=40, detectShadows=False)
+        self.frame_area = 640 * 480
+        
         # CLAHE Contrast Enhancer for ALPR CNN pre-processing
         self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
@@ -371,6 +375,20 @@ class SurveillanceEngine:
             except Exception as e:
                 print(f"YOLO inference notice: {e}")
 
+        # Motion/Foreground vehicle region filter using Background Subtractor MOG2
+        fg_mask = self.bg_subtractor.apply(frame)
+        kernel_op = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        cleaned_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel_op)
+        cleaned_mask = cv2.dilate(cleaned_mask, kernel_op, iterations=2)
+        
+        mask_contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        vehicle_regions = []
+        for m_cnt in mask_contours:
+            mx, my, mw, mh = cv2.boundingRect(m_cnt)
+            bbox_area = mw * mh
+            if 0.03 * self.frame_area <= bbox_area <= 0.35 * self.frame_area:
+                vehicle_regions.append((mx, my, mw, mh))
+
         # Secondary CLAHE + Sobel-X HSRP Plate Localization fallback
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         enhanced_gray = self.clahe.apply(gray)
@@ -386,9 +404,22 @@ class SurveillanceEngine:
             x, y, w, h = cv2.boundingRect(cnt)
             aspect_ratio = float(w) / h if h > 0 else 0
             area = cv2.contourArea(cnt)
-            if 1.8 <= aspect_ratio <= 6.5 and 350 < area < 100000 and 35 <= w <= 580 and 10 <= h <= 280:
+            
+            # Tightened HSRP Plate Geometry
+            if 1.8 <= aspect_ratio <= 6.5 and 350 < area < 8000 and 35 <= w <= 220 and 10 <= h <= 70:
                 plate_roi = gray[y:y+h, x:x+w]
                 if plate_roi.size > 0 and np.std(plate_roi) > 14:
+                    cx = x + w // 2
+                    cy = y + h // 2
+                    
+                    # Verify plate centroid falls inside at least one valid vehicle region
+                    in_vehicle_region = any(
+                        (vx_m <= cx <= vx_m + vw_m) and (vy_m <= cy <= vy_m + vh_m)
+                        for (vx_m, vy_m, vw_m, vh_m) in vehicle_regions
+                    )
+                    if not in_vehicle_region:
+                        continue
+
                     pad_w = int(w * 0.15)
                     pad_h = int(h * 0.4)
                     vx = max(0, x - pad_w)

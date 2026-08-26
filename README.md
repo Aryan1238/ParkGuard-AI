@@ -54,7 +54,7 @@ flowchart LR
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/<YOUR-USERNAME>/ParkGuard-AI.git
+git clone https://github.com/Aryan1238/ParkGuard-AI.git
 cd ParkGuard-AI
 ```
 
